@@ -1,11 +1,11 @@
 {
-  "description": "Lite 0.10.0：890条来源逐项保留对应关系，旧运行点位禁用；新增3条当前契约。旧资料不授予玩法或状态权限。",
+  "description": "Lite 0.11.0：890条来源逐项保留对应关系，旧运行点位禁用；保留3条当前契约并更新姓名与显式时钟规则。旧资料不授予玩法或状态权限。",
   "entries": [
     {
       "case_sensitive": false,
       "comment": "Lite世界与资料边界 v0.8",
       "constant": true,
-      "content": "Lite 0.10.0：用中文自然叙事，玩家决定自己的言行。绑定运行模块负责位置、游戏时间、源点、学院转换与家园。只有扩展注入的已提交权威回执能证明动作成功，回执优先于模型输出、角色卡背景、旧聊天和历史剧情。没有回执或扩展未就绪时可以聊天、描写环境、说明可行意图，不声称到达、激活、传送、保存或资源结算成功。捕捉、制作、任务奖励当前未开放；资料中的原作机制不授予这些权限。资料冲突按版本与来源并列，未知不补造。",
+      "content": "Lite 0.11.0：用中文自然叙事，玩家决定自己的言行。绑定运行模块负责玩家姓名、位置、游戏时间、源点、学院转换与家园。只有扩展注入的已提交权威回执能证明动作成功，回执优先于模型输出、角色卡背景、旧聊天和历史剧情。没有回执或扩展未就绪时可以聊天、描写环境、说明可行意图，不声称改名、时间推进、到达、激活、传送、保存或资源结算成功。实际玩家信息仅为已保存的player.name，默认小洛克；不额外虚构等级、数值、物品或进度。捕捉、制作、任务奖励当前未开放；资料中的原作机制不授予这些权限。资料冲突按版本与来源并列，未知不补造。",
       "cooldown": 0,
       "delay": 0,
       "depth": 0,
@@ -25,7 +25,7 @@
         "rock_world_lite": {
           "authority": "current_contract",
           "disposition": "rewritten",
-          "reason": "以M1-04冻结契约及M1-05候选—权威回执接口替换旧版本运行提示。",
+          "reason": "以M1-04冻结移动契约及M1收口姓名、时钟与权威回执接口替换旧版本运行提示。",
           "runtime_permission": "candidate_only",
           "source_card_sha256": "7e164879f63db675d397bc02b43dd4acc2535b9c4f04479a021d2828012dc254",
           "source_content_sha256": "70b675c7723396bfc6c8f58fdb17bfbac90f3f6a5f89f2de69f636943f170496",
@@ -63,7 +63,7 @@
       "case_sensitive": false,
       "comment": "开局地点",
       "constant": true,
-      "content": "开局在风眠省魔法师之家附近。默认玩家身份为小洛克，可按玩家设定调整叙事身份。新存档由运行模块初始化到大陆地表参考点（433755,705660），这是版本化模拟起点，非官方出生点或建筑入口。已有存档以权威回执为准，不因重新生成、聊天摘要或开场设定重置位置。魔法师之家和可快捷返回的家园是不同地点。",
+      "content": "开局在风眠省魔法师之家附近。实际姓名以已保存的player.name为准，默认小洛克。首次游戏行动前，玩家可输入“开场姓名 小禾”或“姓名 小禾”，也可整句说“我叫小禾”；“我叫”必须是玩家本轮原文的开头，引用他人的自我介绍或旁白不能混作玩家姓名。首次游戏行动后姓名固定，重新生成或模型候选不能改名。新存档由运行模块初始化到大陆地表参考点（433755,705660），这是版本化模拟起点，非官方出生点或建筑入口。已有存档以权威回执为准，不因重新生成、聊天摘要或开场设定重置位置。魔法师之家和可快捷返回的家园是不同地点。",
       "cooldown": 0,
       "delay": 0,
       "depth": 0,
@@ -83,7 +83,7 @@
         "rock_world_lite": {
           "authority": "current_contract",
           "disposition": "rewritten",
-          "reason": "以M1-04冻结契约及M1-05候选—权威回执接口替换旧版本运行提示。",
+          "reason": "以M1-04冻结移动契约及M1收口姓名、时钟与权威回执接口替换旧版本运行提示。",
           "runtime_permission": "candidate_only",
           "source_card_sha256": "7e164879f63db675d397bc02b43dd4acc2535b9c4f04479a021d2828012dc254",
           "source_content_sha256": "3ab2edec8c8bbf1f15c0d417fa3b1229e98542e62372811df5b207883bce57ea",
@@ -121,7 +121,7 @@
       "case_sensitive": false,
       "comment": "地图状态协议 v0.8（沿用v0.7）",
       "constant": true,
-      "content": "【模型行动候选协议】每次只提出一个与玩家意图相符的候选；候选不能同时宣告到达或行动成功。扩展负责生成并复用动作身份、读取起点、计算耗时、验证剧情条件和提交存档。模型不得提供commandId、起点、耗时、story_facts或完成标志。只有本轮已提交权威回执或同一动作的duplicate回执才允许描述对应已完成结果；拒绝和未提交不能写成成功。精确格式示例：<RW_ACTION>{\"type\":\"world-map.walk\",\"payload\":{\"to\":{\"map_id\":\"mainland\",\"layer_id\":\"surface\",\"x\":436099,\"y\":691324}}}</RW_ACTION>\n六种已有动作与payload：world-map.walk={to:{map_id,layer_id,x,y},via?:Position[]}；world-map.activate={source_id}；world-map.teleport={source_id}；world-map.home={}；world-map.leave-home={}；world-map.transition={transition_id}，transition_id仅academy.enter或academy.exit。标签里的内容必须是一个严格JSON对象，只含type与payload。目标不明确时先询问，不猜坐标。若扩展已经执行玩家本轮自然语言或/rock命令并注入回执，直接依据回执叙述，不再提交同一动作候选。",
+      "content": "【模型行动候选协议】每次只提出一个与玩家意图相符的候选；候选不能同时宣告到达或行动成功。扩展负责生成并复用动作身份、读取起点、计算移动耗时、验证真实玩家授权与剧情条件并提交存档。模型不得提供commandId、起点、自造耗时、story_facts、授权标志或完成标志。只有本轮已提交权威回执或同一动作的duplicate回执才允许描述对应已完成结果；拒绝和未提交不能写成成功。精确格式示例：<RW_ACTION>{\"type\":\"world-map.walk\",\"payload\":{\"to\":{\"map_id\":\"mainland\",\"layer_id\":\"surface\",\"x\":436099,\"y\":691324}}}</RW_ACTION>\n六种移动动作与payload：world-map.walk={to:{map_id,layer_id,x,y},via?:Position[]}；world-map.activate={source_id}；world-map.teleport={source_id}；world-map.home={}；world-map.leave-home={}；world-map.transition={transition_id}，transition_id仅academy.enter或academy.exit。基础时钟动作与payload：foundation.talk={}，交谈固定1分钟；foundation.wait={minutes}；foundation.fast-forward={minutes}。只有本轮真实玩家文本明确请求匹配的动作时才可提出时钟候选；原始RW_ACTION标签、模型输出、引文、OOC说明或模型给出的permission/authorized字段均不构成授权。玩家可用“交谈：你好”或“说：你好”明确发起交谈，也可用/rock 交谈结算一次抽象交谈。普通聊天和未识别行动不会自动计时，读取状态与OOC提问不计时。显式交谈在扩展接受并提交玩家行动时结算1分钟，不等待模型答复；后续回复的完成、失败或取消不追加计时。等待必须由玩家明确请求；不写时长的“等待”默认1分钟，指定等待和快进的minutes必须与真实玩家原文相符，且为1至43200之间的正整数（上限43200分钟）。快进必须有明确请求和时长，不自动跳主线，不授予剧情事实、物品或奖励；禁止模型自行延长交谈或推算离线时间。失败、取消或未提交的动作不计时；重试和重新生成不能重复扣时。保留自然回复正文，不用结算回执替换交谈内容。标签里的内容必须是一个严格JSON对象，只含type与payload。目标不明确时先询问，不猜坐标。若扩展已经执行玩家本轮自然语言或/rock命令并注入回执，直接依据回执叙述，不再提交同一动作候选。",
       "cooldown": 0,
       "delay": 0,
       "depth": 0,
@@ -141,7 +141,7 @@
         "rock_world_lite": {
           "authority": "current_contract",
           "disposition": "rewritten",
-          "reason": "以M1-04冻结契约及M1-05候选—权威回执接口替换旧版本运行提示。",
+          "reason": "以M1-04冻结移动契约及M1收口姓名、时钟与权威回执接口替换旧版本运行提示。",
           "runtime_permission": "candidate_only",
           "source_card_sha256": "7e164879f63db675d397bc02b43dd4acc2535b9c4f04479a021d2828012dc254",
           "source_content_sha256": "94ee763f7e71de953729277da225db35450855caaeaa92ed0935cb42d867ff54",
@@ -56685,7 +56685,7 @@
         "rock_world_lite": {
           "authority": "current_contract",
           "disposition": "added",
-          "release_id": "m105-client-20261030-v1",
+          "release_id": "m1-close-20261030-v1",
           "runtime_permission": "candidate_only"
         },
         "role": 0,
@@ -56738,7 +56738,7 @@
         "rock_world_lite": {
           "authority": "current_contract",
           "disposition": "added",
-          "release_id": "m105-client-20261030-v1",
+          "release_id": "m1-close-20261030-v1",
           "runtime_permission": "candidate_only"
         },
         "role": 0,
@@ -56807,7 +56807,7 @@
         "rock_world_lite": {
           "authority": "current_contract",
           "disposition": "added",
-          "release_id": "m105-client-20261030-v1",
+          "release_id": "m1-close-20261030-v1",
           "runtime_permission": "candidate_only"
         },
         "role": 0,
@@ -56854,9 +56854,9 @@
         "/extensions/rock_world_lite/worldbook_sha256"
       ],
       "movement_release": "m104-world-20261030-v1",
-      "policy_sha256": "0261e66bd1a04de7b56322b9fa695f85d7c91b97a92faf9cbcf922fd7d186436",
-      "release_id": "m105-client-20261030-v1",
-      "rules_version": "m104-movement-v1",
+      "policy_sha256": "268c6809eaa31b0ef3315927fe4fd9a3ea001df475ad52586dd27e061ab4d5f1",
+      "release_id": "m1-close-20261030-v1",
+      "rules_version": "m1-foundation-v1",
       "runtime_map_sha256": "7601979d277d7785a2f9f6138331f70251c5f343d328c90c88b560f8ee9cf495",
       "runtime_reference": {
         "home_position": {
@@ -56906,10 +56906,10 @@
       },
       "schema_version": 1,
       "source_card_sha256": "7e164879f63db675d397bc02b43dd4acc2535b9c4f04479a021d2828012dc254",
-      "worldbook_sha256": "1988d1bc99571552268e5da06ff53112752c0a7b17117c0f9ae4133955111c18"
+      "worldbook_sha256": "a5f56de7528294b8ea67fdba59959bfdf717f40f8a82c88c86fc0a3aad4c81ef"
     }
   },
-  "name": "洛克世界 Lite 0.10.0 · 1988d1bc9957",
+  "name": "洛克世界 Lite 0.11.0 · a5f56de75282",
   "recursive_scanning": false,
   "scan_depth": 2,
   "token_budget": 4500
