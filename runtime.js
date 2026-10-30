@@ -942,7 +942,7 @@ function createWorldMapModule(release) {
 }
 
 // src/generated-pins.ts
-var CLIENT_RELEASE_ID = "m105-client-20261030-v1";
+var CLIENT_RELEASE_ID = "m1-close-20261030-v1";
 var MAP_SHA256 = "7601979d277d7785a2f9f6138331f70251c5f343d328c90c88b560f8ee9cf495";
 var CATALOG_SHA256 = "34a0c37099fd6e20321c60f6a3bbc5148b59a2b539cdc387829c1c752bf550fb";
 
@@ -954,7 +954,191 @@ async function sha256Bytes(value) {
 }
 var sha256Text = (value) => sha256Bytes(new TextEncoder().encode(value));
 
+// src/clock-actions.ts
+var CLOCK_POLICY_VERSION = "m1-clock-20261030-v1";
+var CLOCK_COMMANDS = Object.freeze(["foundation.talk", "foundation.wait", "foundation.fast-forward"]);
+var MAX_MINUTES2 = 43200;
+function clockHandler(mode) {
+  return (state, payload, ctx) => {
+    const parameters = object(payload, "CLOCK_PAYLOAD_INVALID");
+    const keys = Object.keys(parameters);
+    ensure(mode === "talk" ? keys.length === 0 : keys.length === 1 && Object.hasOwn(parameters, "minutes"), "CLOCK_PAYLOAD_INVALID");
+    const minutes = mode === "talk" ? 1 : parameters.minutes;
+    ensure(typeof minutes === "number" && Number.isSafeInteger(minutes) && minutes >= 1 && minutes <= MAX_MINUTES2, "CLOCK_DURATION_INVALID");
+    const now = ctx.now + minutes;
+    ensure(Number.isSafeInteger(ctx.now) && ctx.now >= 0 && Number.isSafeInteger(now), "CLOCK_TIME_OVERFLOW");
+    const next = object(copy(state), "FOUNDATION_STATE_INVALID");
+    next.openingLocked = true;
+    return {
+      state: next,
+      effects: {
+        minutes,
+        facts: [{ kind: "clock.result", data: { policy_version: CLOCK_POLICY_VERSION, mode, minutes, from: ctx.now, now } }]
+      }
+    };
+  };
+}
+var clockHandlers = Object.freeze({
+  "foundation.talk": clockHandler("talk"),
+  "foundation.wait": clockHandler("wait"),
+  "foundation.fast-forward": clockHandler("fast-forward")
+});
+function isTalkTarget(value) {
+  const target = value.trim();
+  return target.length > 0 && !/[，,。.!?！？;；:："'“”‘’<>()\[\]{}\r\n]/u.test(target);
+}
+function parseClockIntent(text) {
+  if (typeof text !== "string") return null;
+  const raw = text.trim();
+  if (/[\r\n]/u.test(raw) || raw.includes("RW_ACTION")) return null;
+  const input = raw.replace(/[。！!]+$/u, "").trimEnd();
+  const talk = () => ({ type: "foundation.talk", payload: {} });
+  if (input === "\u4EA4\u8C08" || input === "\u804A\u5929") return talk();
+  const speech = input.match(/^(?:交谈|说|我说)[：:]([^\r\n]+)$/u);
+  if (speech?.[1].trim()) return talk();
+  const addressed = input.match(/^对(.+?)说[：:]([^\r\n]+)$/u);
+  if (addressed && isTalkTarget(addressed[1]) && addressed[2].trim()) return talk();
+  const conversation = input.match(/^(?:与|和)(.+)交谈$/u);
+  if (conversation && isTalkTarget(conversation[1])) return talk();
+  if (["\u7B49\u5F85", "\u7B49\u4E00\u4F1A\u513F", "\u81EA\u7136\u7B49\u5F85"].includes(input)) return { type: "foundation.wait", payload: { minutes: 1 } };
+  const duration = input.match(/^(等待|自然等待|快进|跳过时间)[ \t\u3000]*([1-9][0-9]{0,4})[ \t\u3000]*(分钟|小时|天)$/u);
+  if (!duration) return null;
+  const minutes = Number(duration[2]) * (duration[3] === "\u5929" ? 1440 : duration[3] === "\u5C0F\u65F6" ? 60 : 1);
+  if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > MAX_MINUTES2) return null;
+  return { type: duration[1] === "\u7B49\u5F85" || duration[1] === "\u81EA\u7136\u7B49\u5F85" ? "foundation.wait" : "foundation.fast-forward", payload: { minutes } };
+}
+function authorizeClockCandidate(text, candidate) {
+  const authorized = parseClockIntent(text);
+  ensure(authorized !== null, "CLOCK_AUTHORIZATION_REQUIRED");
+  ensure(canonical(candidate) === canonical(authorized), "CLOCK_INTENT_MISMATCH");
+}
+
+// src/foundation.ts
+var FOUNDATION_RULES_VERSION = "m1-foundation-v1";
+var FOUNDATION_MODULE_ID = "foundation";
+var NAME_COMMAND = "foundation.set-name";
+var FOUNDATION_COMMANDS = Object.freeze([NAME_COMMAND, ...CLOCK_COMMANDS]);
+function playerName(value) {
+  ensure(typeof value === "string" && value.trim().length > 0 && [...value].length <= 80 && !/[\u0000-\u001f\u007f<>]/u.test(value), "PLAYER_NAME_INVALID");
+  return value;
+}
+function createFoundationState(profile = "lite", name = "\u5C0F\u6D1B\u514B", openingLocked = false) {
+  return {
+    schemaVersion: 1,
+    buildId: `rock-world-${profile}@0.11.0`,
+    player: { name: playerName(name) },
+    openingLocked,
+    clockPolicyVersion: CLOCK_POLICY_VERSION,
+    story: {},
+    relationships: {},
+    pets: { party: [], boxes: [] },
+    inventory: {},
+    home: { decorations: [] }
+  };
+}
+function createFoundationModule(profile = "lite") {
+  const keys = ["schemaVersion", "buildId", "player", "openingLocked", "clockPolicyVersion", "story", "relationships", "pets", "inventory", "home"];
+  return { id: FOUNDATION_MODULE_ID, stateVersion: 1, init: () => asJson(createFoundationState(profile)), validate(input) {
+    const s = object(input, "FOUNDATION_STATE_INVALID");
+    ensure(Object.keys(s).length === keys.length && keys.every((k) => Object.hasOwn(s, k)), "FOUNDATION_STATE_INVALID");
+    ensure(s.schemaVersion === 1 && s.buildId === `rock-world-${profile}@0.11.0` && s.clockPolicyVersion === CLOCK_POLICY_VERSION && typeof s.openingLocked === "boolean", "FOUNDATION_VERSION_MISMATCH");
+    const p = object(s.player, "PLAYER_STATE_INVALID");
+    ensure(Object.keys(p).length === 1 && Object.hasOwn(p, "name"), "PLAYER_STATE_INVALID");
+    playerName(p.name);
+    for (const key of ["story", "relationships", "inventory"]) ensure(canonical(s[key]) === "{}", "FOUNDATION_RESERVED_STATE_UNSUPPORTED");
+    ensure(canonical(s.pets) === '{"boxes":[],"party":[]}' && canonical(s.home) === '{"decorations":[]}', "FOUNDATION_RESERVED_STATE_UNSUPPORTED");
+  }, commands: { ...clockHandlers, [NAME_COMMAND](state, payload) {
+    const s = copy(state), p = object(payload, "PLAYER_NAME_INVALID");
+    ensure(Object.keys(p).length === 1 && Object.hasOwn(p, "name"), "PLAYER_NAME_INVALID");
+    ensure(!s.openingLocked, "OPENING_IDENTITY_LOCKED");
+    s.player.name = playerName(p.name);
+    return { state: asJson(s), effects: { minutes: 0, facts: [{ kind: "player.identity", data: { name: s.player.name } }] } };
+  } }, subscriptions: ["world-map.moved", "world-map.source-activated"].map((type) => ({ from: "world-map", type, handle(state) {
+    const s = copy(state);
+    s.openingLocked = true;
+    return { state: asJson(s) };
+  } })) };
+}
+function parseOpeningName(input) {
+  const text = input.trim().replace(/[。！!]+$/u, "");
+  let match = text.match(/^(?:开场姓名|姓名)\s+(.+)$/u);
+  if (!match) match = text.match(/^我叫([^，。！？；：,!?;:\n]+)$/u);
+  if (!match) return null;
+  return { type: NAME_COMMAND, payload: { name: playerName(match[1].trim()) } };
+}
+function authorizeNameCandidate(text, candidate) {
+  ensure(canonical(parseOpeningName(text)) === canonical(candidate), "PLAYER_NAME_AUTHORIZATION_REQUIRED");
+}
+function liteStateView(state) {
+  const foundation = copy(state.moduleState[FOUNDATION_MODULE_ID]?.data);
+  ensure(foundation, "FOUNDATION_STATE_INVALID");
+  return {
+    ...foundation,
+    worldTime: { minutes: state.worldTime },
+    map: copy(state.moduleState["world-map"].data),
+    transactionLog: state.journal.map((j) => j.commandId),
+    worldDataVersion: state.worldDataVersion,
+    rulesVersion: state.rulesVersion,
+    revision: state.revision
+  };
+}
+
+// src/state-upgrade.ts
+var BACKUPS = "rock-world.upgrade.backups.v1";
+function normalizeFoundationSnapshot(input, registries) {
+  const state = copy(input);
+  ensure(state.worldDataVersion === WORLD_DATA_VERSION, "DATA_VERSION_MISMATCH");
+  if (state.rulesVersion === FOUNDATION_RULES_VERSION) {
+    validateState(state, registries.registry);
+    return state;
+  }
+  ensure(state.rulesVersion === RULES_VERSION, "RULES_VERSION_MISMATCH");
+  validateState(state, registries.legacyRegistry);
+  state.rulesVersion = FOUNDATION_RULES_VERSION;
+  state.moduleState.foundation = { version: 1, data: asJson(createFoundationState(state.profile)) };
+  validateState(state, registries.registry);
+  return state;
+}
+async function upgradeStoredWorld(save, key, registries) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const raw = await save.load(key);
+    if (raw === null) return;
+    const next = normalizeFoundationSnapshot(raw, registries);
+    ensure(makeSaveKey(next.profile, next.sessionKey, next.branchId) === key, "SAVE_SCOPE_MISMATCH");
+    if (raw.rulesVersion === FOUNDATION_RULES_VERSION) return;
+    ensure(save.capability === "atomicCAS" && typeof save.recordCreate === "function" && typeof save.recordGet === "function", "UPGRADE_BACKUP_REQUIRED");
+    const rawText = canonical(raw), digest = await sha256Text(rawText), backupId = "v010-" + digest;
+    const backup = { format: "rock-world.upgrade-backup", version: 1, save_key: key, world_sha256: digest, raw: rawText };
+    await save.recordCreate(BACKUPS, backupId, backup);
+    ensure(canonical(await save.recordGet(BACKUPS, backupId)) === canonical(backup), "UPGRADE_BACKUP_MISMATCH");
+    ensure(next.journal.length < DEFAULT_LIMITS.maxJournal, "JOURNAL_FULL");
+    next.revision++;
+    const commandId = "m1-upgrade:" + digest;
+    ensure(!next.journal.some((j) => j.commandId === commandId), "UPGRADE_COMMAND_CONFLICT");
+    const receipt = { status: "committed", commandId, revision: next.revision, events: [], narrativeFacts: [{ kind: "foundation.upgraded", data: { from: "0.10.0", to: "0.11.0", minutes: 0, backupId } }], pendingTasks: next.scheduler.jobs.filter((j) => j.due <= next.worldTime).length };
+    next.journal.push({ commandId, fingerprint: null, revision: next.revision, receipt });
+    validateState(next, registries.registry);
+    if (await save.commit(key, raw.revision, next) === "conflict") continue;
+    const persisted = await save.load(key);
+    ensure(persisted !== null, "UPGRADE_SAVE_UNCONFIRMED");
+    normalizeFoundationSnapshot(persisted, registries);
+    ensure(persisted.journal.some((j) => j.commandId === commandId), "UPGRADE_SAVE_UNCONFIRMED");
+    return;
+  }
+  ensure(false, "UPGRADE_CONFLICT");
+}
+async function loadUpgradeBackup(save, backupId) {
+  ensure(typeof save.recordGet === "function", "UPGRADE_BACKUP_REQUIRED");
+  const value = await save.recordGet(BACKUPS, backupId);
+  if (value === null) return null;
+  const b = value;
+  ensure(b.format === "rock-world.upgrade-backup" && b.version === 1 && typeof b.raw === "string" && await sha256Text(b.raw) === b.world_sha256, "UPGRADE_BACKUP_MISMATCH");
+  return b.raw;
+}
+
 // src/browser-runtime.ts
+var RULES_VERSION2 = FOUNDATION_RULES_VERSION;
+var PLAYER_ACTIONS = Object.freeze([...PLAYER_COMMANDS, ...FOUNDATION_COMMANDS]);
 async function readPinned(base, name, expected, error) {
   const response = await fetch(new URL(name, base), { cache: "no-store" });
   ensure(response.ok, "BROWSER_DATA_LOAD_FAILED");
@@ -986,10 +1170,19 @@ async function createBrowserMovementRuntime(options) {
     });
     releases.set(base, pending);
   }
-  const loaded = await pending, module = createWorldMapModule(loaded.release), registry = options.profile === "lite" ? liteRegistry([module]) : fullRegistry([module]);
-  const gateway = new Gateway({ ...options, registry, data: loaded.data, rulesVersion: RULES_VERSION, allowFixtures: false });
-  const authority = Object.freeze({ actorId: options.actorId ?? "player", sessionKey: options.sessionKey, allowedTypes: PLAYER_COMMANDS });
-  return Object.freeze({ ...loaded, gateway, registry, execute: (input) => gateway.execute(input, authority) });
+  const loaded = await pending, module = createWorldMapModule(loaded.release), createRegistry = options.profile === "lite" ? liteRegistry : fullRegistry;
+  const registry = createRegistry([module, createFoundationModule(options.profile)]), legacyRegistry = createRegistry([module]);
+  const gateway = new Gateway({ ...options, registry, data: loaded.data, rulesVersion: RULES_VERSION2, allowFixtures: false });
+  const authority = Object.freeze({ actorId: options.actorId ?? "player", sessionKey: options.sessionKey, allowedTypes: PLAYER_ACTIONS });
+  return Object.freeze({
+    ...loaded,
+    gateway,
+    registry,
+    legacyRegistry,
+    normalizeSnapshot: (state) => normalizeFoundationSnapshot(state, { registry, legacyRegistry }),
+    upgrade: () => upgradeStoredWorld(options.save, gateway.key, { registry, legacyRegistry }),
+    execute: (input) => gateway.execute(input, authority)
+  });
 }
 
 // src/idb-store.ts
@@ -1266,7 +1459,7 @@ var NAMESPACE = "rock-world.intent.v1";
 function validateCandidate(raw) {
   const o = object(raw, "CANDIDATE_INVALID");
   ensure(Object.keys(o).length === 2 && Object.hasOwn(o, "type") && Object.hasOwn(o, "payload"), "CANDIDATE_FIELDS_INVALID");
-  ensure(typeof o.type === "string" && PLAYER_COMMANDS.includes(o.type), "CANDIDATE_TYPE_FORBIDDEN");
+  ensure(typeof o.type === "string" && PLAYER_ACTIONS.includes(o.type), "CANDIDATE_TYPE_FORBIDDEN");
   ensure(new TextEncoder().encode(canonical(o)).length <= 12e3, "CANDIDATE_TOO_LARGE");
   return copy(o);
 }
@@ -1281,7 +1474,9 @@ function extractCandidate(text) {
   } catch {
     ensure(false, "CANDIDATE_JSON_INVALID");
   }
-  return validateCandidate(raw);
+  const candidate = validateCandidate(raw);
+  ensure(candidate.type !== NAME_COMMAND, "PLAYER_NAME_AUTHORIZATION_REQUIRED");
+  return candidate;
 }
 async function conversationScope(host) {
   for (const x of [host.account, host.avatar, host.integrity]) ensure(typeof x === "string" && x.trim().length > 0 && x.length <= 512, "HOST_IDENTITY_MISSING");
@@ -1355,6 +1550,12 @@ var ConversationBridge = class {
     ensure(record2.commandId === intent.commandId && record2.originSaveKey === intent.originSaveKey && record2.textSha256 === intent.textSha256, "INTENT_RECORD_MISMATCH");
     const scope = JSON.parse(record2.originSaveKey);
     ensure(scope[1] === "lite" && scope[2] === this.runtime.gateway.options.sessionKey, "INTENT_SCOPE_MISMATCH");
+    if (candidate.type === NAME_COMMAND || CLOCK_COMMANDS.includes(candidate.type)) {
+      const message = this.host.messages.find((m) => m.is_user && m.is_system !== true && m.extra?.rock_world_lite?.commandId === intent.commandId);
+      ensure(message && await sha256Text(message.mes) === intent.textSha256, "USER_ACTION_AUTHORIZATION_REQUIRED");
+      if (candidate.type === NAME_COMMAND) authorizeNameCandidate(message.mes, candidate);
+      else authorizeClockCandidate(message.mes, candidate);
+    }
     if (record2.candidate === null) {
       await this.save.recordCAS(NAMESPACE, intent.recordKey, asJson(record2), asJson({ ...record2, candidate }));
       record2 = intentRecord(await this.save.recordGet(NAMESPACE, intent.recordKey));
@@ -1365,9 +1566,9 @@ var ConversationBridge = class {
     this.current = await this.runtime.gateway.snapshot();
     let committedReceipt = null;
     if (receipt.status === "committed" || receipt.status === "duplicate") {
-      const point = await this.save.loadCheckpoint(this.runtime.gateway.key, intent.commandId) ?? await this.save.loadCheckpoint(intent.originSaveKey, intent.commandId);
-      ensure(point, "RECEIPT_CHECKPOINT_MISSING");
-      validateState(point, this.runtime.registry);
+      const original = await this.save.loadCheckpoint(this.runtime.gateway.key, intent.commandId) ?? await this.save.loadCheckpoint(intent.originSaveKey, intent.commandId);
+      ensure(original, "RECEIPT_CHECKPOINT_MISSING");
+      const point = this.runtime.normalizeSnapshot(original);
       const committed = point.journal.find((x) => x.commandId === intent.commandId)?.receipt;
       ensure(committed?.status === "committed", "RECEIPT_CHECKPOINT_MISSING");
       committedReceipt = copy(committed);
@@ -1388,6 +1589,8 @@ var ConversationBridge = class {
   parsePlayer(input) {
     const text = input.trim().replace(/[。！!]+$/u, "");
     if (text.startsWith("<RW_ACTION>")) return extractCandidate(text);
+    const foundation = parseOpeningName(input) ?? parseClockIntent(input);
+    if (foundation) return foundation;
     const move = this.current.moduleState["world-map"].data;
     const sources = this.runtime.release.sources, locations = this.runtime.release.locations;
     const point = (name) => locations.find((p) => p.name === name) || sources.find((p) => p.name === name);
@@ -1432,19 +1635,22 @@ async function openConversation(host, save) {
   }
   const runtime = await createBrowserMovementRuntime({ profile: "lite", ...scope, seed: 20261030, save, assetBase: host.assetBase });
   const existing = await save.load(runtime.gateway.key);
-  if (existing !== null) return new ConversationBridge(host, save, runtime, await runtime.gateway.snapshot());
+  if (existing !== null) {
+    await runtime.upgrade();
+    return new ConversationBridge(host, save, runtime, await runtime.gateway.snapshot());
+  }
   for (const message of [...host.messages].reverse()) {
     if (!message.is_user || !message.extra?.rock_world_lite) continue;
     const intent = marker(message.extra.rock_world_lite), sourceScope = JSON.parse(intent.originSaveKey);
     ensure(sourceScope[1] === "lite" && sourceScope[2] === scope.sessionKey, "BRANCH_SCOPE_MISMATCH");
     const record2 = await save.recordGet(NAMESPACE, intent.recordKey);
     ensure(record2 !== null, "INTENT_HISTORY_MISSING");
-    const checkpoint = await save.loadCheckpoint(intent.originSaveKey, intent.commandId);
-    if (!checkpoint) {
+    const rawCheckpoint = await save.loadCheckpoint(intent.originSaveKey, intent.commandId);
+    if (!rawCheckpoint) {
       ensure(intent.settled !== true, "BRANCH_CHECKPOINT_MISSING");
       continue;
     }
-    validateState(checkpoint, runtime.registry);
+    const checkpoint = runtime.normalizeSnapshot(rawCheckpoint);
     ensure(checkpoint.worldDataVersion === runtime.data.version && checkpoint.rulesVersion === runtime.gateway.options.rulesVersion, "BRANCH_VERSION_MISMATCH");
     ensure(checkpoint.sessionKey === scope.sessionKey, "BRANCH_SCOPE_MISMATCH");
     const next = copy(checkpoint);
@@ -1457,9 +1663,9 @@ async function openConversation(host, save) {
   if (baseMessage) {
     const base = object(baseMessage.extra.rock_world_lite_base, "IMPORT_BASE_INVALID");
     ensure(typeof base.saveKey === "string", "IMPORT_BASE_INVALID");
-    const saved = await save.recordGet("rock-world.chat-base.v1", base.saveKey);
-    ensure(saved !== null, "IMPORT_BASE_MISSING");
-    validateState(saved, runtime.registry);
+    const original = await save.recordGet("rock-world.chat-base.v1", base.saveKey);
+    ensure(original !== null, "IMPORT_BASE_MISSING");
+    const saved = runtime.normalizeSnapshot(original);
     ensure(saved.profile === "lite" && saved.sessionKey === scope.sessionKey, "BRANCH_SCOPE_MISMATCH");
     ensure(saved.worldDataVersion === runtime.data.version && saved.rulesVersion === runtime.gateway.options.rulesVersion, "BRANCH_VERSION_MISMATCH");
     const next = copy(saved);
@@ -1472,16 +1678,36 @@ async function openConversation(host, save) {
   return new ConversationBridge(host, save, runtime, initial);
 }
 
+// src/worldbook-pins.ts
+var CARD_RELEASE_PINS = [
+  {
+    releaseId: "m105-client-20261030-v1",
+    cardVersion: "0.10.0",
+    rulesVersion: "m104-movement-v1",
+    bookName: "\u6D1B\u514B\u4E16\u754C Lite 0.10.0 \xB7 1988d1bc9957",
+    worldbookSha256: "1988d1bc99571552268e5da06ff53112752c0a7b17117c0f9ae4133955111c18",
+    referenceFile: "character-book-v0.10.0.json",
+    referenceFileSha256: "9b377f17627b97a28fb802e274c5e729d455799fe9bb3f64766219abcb5a7caa",
+    originalBookSha256: "c9e00c4e2470ac322ac031c6d7c7a63d2ac7002eb74f197ee07168cfead0aad7",
+    nativeBookSha256: "277cfac2f465e3ff2d55e45771e74b8936c8a844b7f41738b0b463d504138fb5",
+    roundtripBookSha256: "da1d8573feb660929a956dfb5f7f16d00ce72c1e5de63a60c3068c74ca3cb4d6"
+  },
+  {
+    releaseId: "m1-close-20261030-v1",
+    cardVersion: "0.11.0",
+    rulesVersion: "m1-foundation-v1",
+    bookName: "\u6D1B\u514B\u4E16\u754C Lite 0.11.0 \xB7 a5f56de75282",
+    worldbookSha256: "a5f56de7528294b8ea67fdba59959bfdf717f40f8a82c88c86fc0a3aad4c81ef",
+    referenceFile: "character-book.json",
+    referenceFileSha256: "e9e0983c62bbab0bae4ad7b601948cd7e71cacdc07cf10c98a3c95f1d6e2ba50",
+    originalBookSha256: "76f9f7bed5fe41aa6dfe312252067255ff11142d0d20e3b56428b82347f37072",
+    nativeBookSha256: "d2ba416d855b7549f3b910240525d56bc51c15b5f70535a23220b9b43a32ce54",
+    roundtripBookSha256: "f495a210efd6b9a7e474d2685de793cc4be5b81c352510a880505ce50aae2557"
+  }
+];
+
 // src/worldbook-binding.ts
-var RELEASE_ID = "m105-client-20261030-v1";
 var MOVEMENT_RELEASE = "m104-world-20261030-v1";
-var RULES_VERSION2 = "m104-movement-v1";
-var WORLD_SHA256 = "1988d1bc99571552268e5da06ff53112752c0a7b17117c0f9ae4133955111c18";
-var BOOK_NAME = "\u6D1B\u514B\u4E16\u754C Lite 0.10.0 \xB7 1988d1bc9957";
-var REFERENCE_FILE_SHA256 = "9b377f17627b97a28fb802e274c5e729d455799fe9bb3f64766219abcb5a7caa";
-var ORIGINAL_BOOK_SHA256 = "c9e00c4e2470ac322ac031c6d7c7a63d2ac7002eb74f197ee07168cfead0aad7";
-var NATIVE_BOOK_SHA256 = "277cfac2f465e3ff2d55e45771e74b8936c8a844b7f41738b0b463d504138fb5";
-var ROUNDTRIP_BOOK_SHA256 = "da1d8573feb660929a956dfb5f7f16d00ce72c1e5de63a60c3068c74ca3cb4d6";
 var REQUEST_TIMEOUT_MS = 15e3;
 var WorldbookBindingError = class extends Error {
   code;
@@ -1552,19 +1778,25 @@ function bindingFrom(character) {
   const binding = dict(extensions) ? extensions.rock_world_lite : void 0;
   return dict(binding) ? binding : void 0;
 }
-async function validateCharacter(character, avatar) {
+function releasePins(releaseId) {
+  return typeof releaseId === "string" ? CARD_RELEASE_PINS.find((pins) => pins.releaseId === releaseId) : void 0;
+}
+function isSupportedCardRelease(releaseId) {
+  return releasePins(releaseId) !== void 0;
+}
+async function validateCharacter(character, pins, avatar) {
   const data = requireObject(character.data, "WORLDBOOK_INVALID", avatar);
   const extensions = requireObject(data.extensions, "WORLDBOOK_INVALID", avatar);
   const binding = requireObject(extensions.rock_world_lite, "WORLDBOOK_INVALID", avatar);
   const book = requireObject(data.character_book, "WORLDBOOK_INVALID", avatar);
   const supportedWrapper = character.spec === "chara_card_v2" && character.spec_version === "2.0" || character.spec === "chara_card_v3" && character.spec_version === "3.0";
-  if (!supportedWrapper || data.character_version !== "0.10.0" || binding.schema_version !== 1 || binding.release_id !== RELEASE_ID || binding.requires_extension !== true || binding.movement_release !== MOVEMENT_RELEASE || binding.rules_version !== RULES_VERSION2 || canonical2(Object.keys(binding).sort()) !== canonical2(["movement_release", "release_id", "requires_extension", "rules_version", "schema_version", "worldbook_sha256"])) {
+  if (!supportedWrapper || data.character_version !== pins.cardVersion || binding.schema_version !== 1 || binding.release_id !== pins.releaseId || binding.requires_extension !== true || binding.movement_release !== MOVEMENT_RELEASE || binding.rules_version !== pins.rulesVersion || canonical2(Object.keys(binding).sort()) !== canonical2(["movement_release", "release_id", "requires_extension", "rules_version", "schema_version", "worldbook_sha256"])) {
     fail("WORLDBOOK_VERSION_MISMATCH", "The card/book does not match the supported release and rule versions.", avatar);
   }
-  if (binding.worldbook_sha256 !== WORLD_SHA256) {
-    fail("WORLDBOOK_DIGEST_MISMATCH", "The claimed digest does not match the frozen M1-05 release.", avatar);
+  if (binding.worldbook_sha256 !== pins.worldbookSha256) {
+    fail("WORLDBOOK_DIGEST_MISMATCH", "The claimed digest does not match the selected frozen release.", avatar);
   }
-  if (book.name !== BOOK_NAME || extensions.world !== book.name || !String(book.name).endsWith(WORLD_SHA256.slice(0, 12))) {
+  if (book.name !== pins.bookName || extensions.world !== book.name || !String(book.name).endsWith(pins.worldbookSha256.slice(0, 12))) {
     fail("WORLDBOOK_NAME_MISMATCH", "The card must already be bound to its exact version/hash book name.", avatar);
   }
   if (!Array.isArray(book.entries) || book.entries.length !== 893) fail("WORLDBOOK_INVALID", "The complete 893-entry V2 book is required.", avatar);
@@ -1584,17 +1816,17 @@ async function validateCharacter(character, avatar) {
     if (error instanceof WorldbookBindingError) fail(error.code, error.message, avatar, error);
     fail("WORLDBOOK_INVALID", "The embedded book cannot be verified.", avatar, error);
   }
-  if (digest !== ORIGINAL_BOOK_SHA256 && digest !== ROUNDTRIP_BOOK_SHA256) {
+  if (digest !== pins.originalBookSha256 && digest !== pins.roundtripBookSha256) {
     fail("WORLDBOOK_DIGEST_MISMATCH", "Embedded book is neither the frozen original nor its exact supported ST roundtrip.", avatar);
   }
   return { book, bookText };
 }
-async function loadReferenceBook(avatar) {
+async function loadReferenceBook(pins, avatar) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let bytes;
   try {
-    const response = await fetch(new URL("./data/character-book.json", import.meta.url), {
+    const response = await fetch(new URL("./data/" + pins.referenceFile, import.meta.url), {
       credentials: "same-origin",
       cache: "no-store",
       signal: controller.signal
@@ -1607,12 +1839,12 @@ async function loadReferenceBook(avatar) {
   } finally {
     clearTimeout(timer);
   }
-  if (await sha256(bytes) !== REFERENCE_FILE_SHA256) {
+  if (await sha256(bytes) !== pins.referenceFileSha256) {
     fail("WORLDBOOK_REFERENCE_INVALID", "Pinned worldbook resource bytes differ from the frozen release.", avatar);
   }
   try {
     const book = requireObject(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
-    if (book.name !== BOOK_NAME || await canonicalWorldbookDigest(book) !== WORLD_SHA256 || await sha256(canonical2(book)) !== ORIGINAL_BOOK_SHA256) {
+    if (book.name !== pins.bookName || await canonicalWorldbookDigest(book) !== pins.worldbookSha256 || await sha256(canonical2(book)) !== pins.originalBookSha256) {
       fail("WORLDBOOK_REFERENCE_INVALID", "Pinned worldbook resource has an invalid digest or name.", avatar);
     }
     return book;
@@ -1666,18 +1898,19 @@ async function post(ctx, endpoint, body, avatar) {
 function emptyMissingResponse(value) {
   return dict(value) && Object.keys(value).length === 1 && dict(value.entries) && Object.keys(value.entries).length === 0;
 }
-async function presence(ctx, avatar) {
+async function presence(ctx, pins, avatar) {
   const list = await post(ctx, "/api/worldinfo/list", {}, avatar);
   if (!Array.isArray(list) || !list.every((item) => dict(item) && typeof item.file_id === "string")) {
     fail("WORLDBOOK_RESPONSE_INVALID", "Server worldbook list has an unsupported shape.", avatar);
   }
-  const listed = list.some((item) => item.file_id === BOOK_NAME);
-  const value = await post(ctx, "/api/worldinfo/get", { name: BOOK_NAME }, avatar);
+  const listed = list.some((item) => item.file_id === pins.bookName);
+  const value = await post(ctx, "/api/worldinfo/get", { name: pins.bookName }, avatar);
   return { listed, value };
 }
 async function ensureWorldbookBinding(ctx) {
   const selected = currentCharacter(ctx);
-  if (bindingFrom(selected)?.release_id !== RELEASE_ID) return { active: false };
+  const pins = releasePins(bindingFrom(selected)?.release_id);
+  if (!pins) return { active: false };
   const avatar = selected?.avatar;
   if (typeof avatar !== "string" || !avatar || /[\\/\0]/.test(avatar)) fail("WORLDBOOK_SCOPE_INVALID", "Current character avatar is missing or invalid.");
   for (const method of ["getRequestHeaders", "convertCharacterBook", "saveWorldInfo", "updateWorldInfoList"]) {
@@ -1690,17 +1923,17 @@ async function ensureWorldbookBinding(ctx) {
   } catch (error) {
     fail("WORLDBOOK_INVALID", "Current character is not cloneable.", avatar, error);
   }
-  const { bookText } = await validateCharacter(character, avatar);
+  const { bookText } = await validateCharacter(character, pins, avatar);
   const scopeCheck = () => {
     const current = currentCharacter(ctx);
     const data = current?.data;
     const extensions = dict(data) ? data.extensions : void 0;
-    if (String(ctx.characterId) !== initialId || current?.avatar !== avatar || bindingFrom(current)?.release_id !== RELEASE_ID || !dict(data) || !dict(extensions) || extensions.world !== BOOK_NAME || canonical2(data.character_book) !== bookText) {
+    if (String(ctx.characterId) !== initialId || current?.avatar !== avatar || bindingFrom(current)?.release_id !== pins.releaseId || !dict(data) || !dict(extensions) || extensions.world !== pins.bookName || canonical2(data.character_book) !== bookText) {
       fail("WORLDBOOK_SCOPE_CHANGED", "The caller character scope changed while checking the binding.", avatar);
     }
   };
   scopeCheck();
-  const book = await loadReferenceBook(avatar);
+  const book = await loadReferenceBook(pins, avatar);
   scopeCheck();
   let converted;
   try {
@@ -1710,7 +1943,7 @@ async function ensureWorldbookBinding(ctx) {
     fail("WORLDBOOK_CONVERSION_INVALID", "Client V2 conversion failed.", avatar, error);
   }
   const expectedNative = canonical2(converted);
-  if (await sha256(expectedNative) !== NATIVE_BOOK_SHA256) {
+  if (await sha256(expectedNative) !== pins.nativeBookSha256) {
     fail("WORLDBOOK_CONVERSION_INVALID", "Client conversion differs from the complete pinned ST 1.19.0 result.", avatar);
   }
   const classify = (found) => {
@@ -1725,14 +1958,14 @@ async function ensureWorldbookBinding(ctx) {
   };
   const verify = async () => {
     scopeCheck();
-    let status = classify(await presence(ctx, avatar));
+    let status = classify(await presence(ctx, pins, avatar));
     let created = false;
     if (status === "absent") {
-      status = classify(await presence(ctx, avatar));
+      status = classify(await presence(ctx, pins, avatar));
       scopeCheck();
       if (status === "absent") {
         try {
-          await ctx.saveWorldInfo(BOOK_NAME, structuredClone(converted), true);
+          await ctx.saveWorldInfo(pins.bookName, structuredClone(converted), true);
         } catch (error) {
           fail("WORLDBOOK_SAVE_FAILED", "Client worldbook save failed.", avatar, error);
         }
@@ -1746,7 +1979,7 @@ async function ensureWorldbookBinding(ctx) {
       }
     }
     scopeCheck();
-    const readback = await presence(ctx, avatar);
+    const readback = await presence(ctx, pins, avatar);
     if (!readback.listed || canonical2(readback.value) !== expectedNative) {
       fail("WORLDBOOK_READBACK_MISMATCH", "The server did not persist the exact expected worldbook.", avatar);
     }
@@ -1754,15 +1987,24 @@ async function ensureWorldbookBinding(ctx) {
     try {
       const server = requireObject(serverCharacter);
       if (server.avatar !== avatar) throw new Error("Server avatar differs.");
-      await validateCharacter(server, avatar);
+      await validateCharacter(server, pins, avatar);
     } catch (error) {
       fail("WORLDBOOK_CHARACTER_READBACK_MISMATCH", "Server character does not retain the verified pre-bound card/book.", avatar, error);
     }
     scopeCheck();
-    return { active: true, ready: true, avatar, bookName: BOOK_NAME, worldbookSha256: WORLD_SHA256, created, serverVerified: true };
+    return {
+      active: true,
+      ready: true,
+      avatar,
+      releaseId: pins.releaseId,
+      bookName: pins.bookName,
+      worldbookSha256: pins.worldbookSha256,
+      created,
+      serverVerified: true
+    };
   };
   const locks = globalThis.navigator?.locks;
-  return locks?.request ? locks.request("rock-world-lite:worldbook:" + BOOK_NAME, verify) : verify();
+  return locks?.request ? locks.request("rock-world-lite:worldbook:" + pins.bookName, verify) : verify();
 }
 
 // vendor/m104/src/migration.ts
@@ -1851,31 +2093,16 @@ async function prepareLegacyMigration(serialized, options) {
   ] };
 }
 
-// src/save-transfer.ts
-var FORMAT = "rock-world.save-transfer";
-var FORMAT_VERSION = 1;
-var BACKUP_NAMESPACE = "rock-world.save-transfer.backups.v1";
-var BACKUP_FORMAT = "rock-world.import-backup";
-var MAX_IMPORT_BYTES = 8 * 1024 * 1024;
-var SaveTransferError = class extends DomainError {
-  backupId;
-  sourceSha256;
-  saveKey;
-  backupVerified;
-  cause;
-  constructor(code, details, cause) {
-    super(code);
-    this.name = "SaveTransferError";
-    this.backupId = details.backupId;
-    this.sourceSha256 = details.sourceSha256;
-    this.saveKey = details.saveKey;
-    this.backupVerified = details.backupVerified;
-    this.cause = cause;
-  }
-};
-function exactObject(value, keys, code) {
+// src/legacy-map.ts
+var LEGACY_MAP_POLICY_VERSION = "m1-legacy-map-20261030-v1";
+var MAGE = "location.mage_home";
+var LAKE = "area.crescent_lakeshore";
+var HOME = "place.I130311110307771";
+var LEGACY_NODES = [MAGE, LAKE, HOME];
+var MAGE_MAP = Object.freeze({ nodeId: MAGE, spaceId: "space.bwiki_s3", layerId: "G", x: -765.7, y: 982.5, sceneId: null });
+function exact3(value, required, optional = [], code = "LEGACY_STATE_INVALID") {
   const parsed = object(value, code);
-  ensure(Object.keys(parsed).length === keys.length && keys.every((key) => Object.hasOwn(parsed, key)), code);
+  ensure(required.every((key) => Object.hasOwn(parsed, key)) && Object.keys(parsed).every((key) => required.includes(key) || optional.includes(key)), code);
   return parsed;
 }
 function rejectDuplicateMembers(text) {
@@ -1903,15 +2130,154 @@ function rejectDuplicateMembers(text) {
     }
   }
 }
+function parseLegacyInput(serialized) {
+  ensure(typeof serialized === "string", "LEGACY_JSON_INVALID");
+  let text = serialized.trim();
+  let tagged = false;
+  if (text.startsWith("<") || text.endsWith(">")) {
+    const match = /^<MAP_STATE>([\s\S]*)<\/MAP_STATE>$/.exec(text);
+    ensure(match && !match[1].includes("<MAP_STATE>") && !match[1].includes("</MAP_STATE>"), "LEGACY_TAG_INVALID");
+    text = match[1].trim();
+    tagged = true;
+  }
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new DomainError("LEGACY_JSON_INVALID");
+  }
+  rejectDuplicateMembers(text);
+  canonical(value);
+  const input = object(value, "LEGACY_STATE_INVALID");
+  const mapOnly = Object.keys(input).length === 1 && Object.hasOwn(input, "map");
+  ensure(!tagged || mapOnly, "LEGACY_TAG_INVALID");
+  return { kind: mapOnly ? "map-only" : "legacy-v09", input: copy(input) };
+}
+function readPosition(input) {
+  const map = exact3(input, ["nodeId", "spaceId", "layerId", "x", "y", "sceneId"], [], "LEGACY_POSITION_INVALID");
+  ensure(map.spaceId === "space.bwiki_s3" && map.layerId === "G", "LEGACY_POSITION_UNMAPPED");
+  ensure(typeof map.nodeId === "string" && LEGACY_NODES.includes(map.nodeId), "LEGACY_POSITION_UNMAPPED");
+  const node = map.nodeId;
+  const noCoordinates = map.x === null && map.y === null;
+  const exactCoordinates = node === MAGE ? map.x === -765.7 && map.y === 982.5 : node === LAKE ? map.x === -833.97 && map.y === 491.2 : map.x === -544.95 && map.y === 289.87;
+  ensure(noCoordinates || exactCoordinates, "LEGACY_POSITION_UNMAPPED");
+  ensure(map.sceneId === null || node === HOME && map.sceneId === "sim.home", "LEGACY_POSITION_UNMAPPED");
+  return { node, home: map.sceneId === "sim.home" };
+}
+function referencePosition(node, release) {
+  if (node === HOME) {
+    ensure(release.home?.id === "home.lingfeng", "LEGACY_RELEASE_POSITION_MISSING");
+    return copy(release.home.position);
+  }
+  const id2 = node === MAGE ? "place.nrc.mainland.region.109" : "place.nrc.mainland.region.21";
+  const matches = release.locations.filter((location) => location.id === id2);
+  ensure(matches.length === 1, "LEGACY_RELEASE_POSITION_MISSING");
+  const position = matches[0].position;
+  if (node === MAGE) ensure(canonical(position) === canonical(release.initial_position), "LEGACY_RELEASE_POSITION_MISMATCH");
+  return copy(position);
+}
+function migrateLegacyMap(input, release) {
+  canonical(input);
+  const wrapper = exact3(input, ["map"], [], "LEGACY_MAP_ONLY_INVALID");
+  const old = readPosition(wrapper.map);
+  validateContract(release);
+  const movement = createMovementState(release, referencePosition(old.node, release));
+  if (old.home) {
+    movement.presence = "home";
+    movement.current_regions = [];
+    movement.discovered_sources = [];
+  }
+  createWorldMapModule(release).validate(asJson(movement));
+  return movement;
+}
+function normalizeLegacyV09(input, release) {
+  canonical(input);
+  const original = object(input, "LEGACY_STATE_INVALID");
+  ensure(original.profile !== "full" && original.buildId !== "rock-world-full", "CROSS_PROFILE_MIGRATION_FORBIDDEN");
+  exact3(original, ["schemaVersion", "buildId", "worldTime", "map", "player", "story", "relationships", "pets", "inventory", "home", "world", "transactionLog"], ["profile"]);
+  ensure(original.schemaVersion === 1 && original.buildId === "rock-world-lite", "UNKNOWN_LEGACY_SCHEMA");
+  ensure(!Object.hasOwn(original, "profile") || original.profile === "lite", "CROSS_PROFILE_MIGRATION_FORBIDDEN");
+  const clock = exact3(original.worldTime, ["minutes"], [], "LEGACY_TIME_INVALID");
+  ensure(Number.isSafeInteger(clock.minutes) && Number(clock.minutes) >= 0, "LEGACY_TIME_INVALID");
+  const player = exact3(original.player, ["name"]);
+  ensure(typeof player.name === "string" && player.name.trim().length > 0, "LEGACY_STATE_INVALID");
+  for (const key of ["story", "relationships", "inventory"]) {
+    ensure(Object.keys(object(original[key], "LEGACY_STATE_INVALID")).length === 0, "LEGACY_NON_MOVEMENT_STATE_UNSUPPORTED");
+  }
+  const pets = exact3(original.pets, ["party", "boxes"]);
+  const home = exact3(original.home, ["regionId", "sceneId", "decorations"]);
+  ensure(home.regionId === HOME && home.sceneId === "sim.home", "LEGACY_HOME_INVALID");
+  for (const list of [pets.party, pets.boxes, home.decorations]) {
+    ensure(Array.isArray(list), "LEGACY_STATE_INVALID");
+    ensure(list.length === 0, "LEGACY_NON_MOVEMENT_STATE_UNSUPPORTED");
+  }
+  const world = exact3(original.world, ["visited", "known", "activatedTeleports"]);
+  for (const key of ["visited", "known", "activatedTeleports"]) {
+    const list = world[key];
+    ensure(Array.isArray(list) && list.every((id2) => typeof id2 === "string"), "LEGACY_STATE_INVALID");
+  }
+  ensure(world.activatedTeleports.length === 0, "LEGACY_TELEPORT_MAPPING_MISSING");
+  const visited = world.visited;
+  const known = world.known;
+  ensure([...visited, ...known].every((id2) => LEGACY_NODES.includes(id2)), "LEGACY_HISTORY_UNMAPPED");
+  ensure(Array.isArray(original.transactionLog) && original.transactionLog.length <= DEFAULT_LIMITS.maxJournal, "INVALID_LEGACY_JOURNAL");
+  const commandIds = original.transactionLog.map((value) => {
+    try {
+      return identifier(value);
+    } catch {
+      throw new DomainError("INVALID_LEGACY_JOURNAL");
+    }
+  });
+  ensure(new Set(commandIds).size === commandIds.length, "INVALID_LEGACY_JOURNAL");
+  const movement = migrateLegacyMap({ map: original.map }, release);
+  const explored = visited.flatMap((node) => regionsAt(referencePosition(node, release), release.regions));
+  movement.explored_regions = [.../* @__PURE__ */ new Set([...movement.explored_regions, ...explored])].sort();
+  createWorldMapModule(release).validate(asJson(movement));
+  const normalized = copy(original);
+  normalized.map = copy(MAGE_MAP);
+  normalized.world = { visited: [], known: [], activatedTeleports: [] };
+  return { input: normalized, movement, name: player.name, warnings: [
+    `\u65E7\u5730\u70B9\u6309 ${LEGACY_MAP_POLICY_VERSION} \u6620\u5C04\u5230\u672C\u7248\u56FA\u5B9A\u53C2\u8003\u70B9\uFF1B\u8FD9\u4E0D\u662F\u65E7\u5750\u6807\u6362\u7B97\uFF0C\u4E5F\u4E0D\u63A8\u5B9A\u6E90\u70B9\u6FC0\u6D3B\u3002`,
+    "\u63A2\u7D22\u8BB0\u5F55\u4EC5\u91C7\u7528\u660E\u786E\u6620\u5C04\u7684\u65E7 visited \u5730\u70B9\u4E0E\u5F53\u524D\u843D\u70B9\uFF1B\u65E7 known \u5143\u6570\u636E\u5B8C\u6574\u4FDD\u7559\u5728\u5BFC\u5165\u539F\u6587\u5907\u4EFD\u4E2D\u3002"
+  ] };
+}
+
+// src/save-transfer.ts
+var FORMAT = "rock-world.save-transfer";
+var FORMAT_VERSION = 1;
+var BACKUP_NAMESPACE = "rock-world.save-transfer.backups.v1";
+var BACKUP_FORMAT = "rock-world.import-backup";
+var MAX_IMPORT_BYTES = 8 * 1024 * 1024;
+var SaveTransferError = class extends DomainError {
+  backupId;
+  sourceSha256;
+  saveKey;
+  backupVerified;
+  cause;
+  constructor(code, details, cause) {
+    super(code);
+    this.name = "SaveTransferError";
+    this.backupId = details.backupId;
+    this.sourceSha256 = details.sourceSha256;
+    this.saveKey = details.saveKey;
+    this.backupVerified = details.backupVerified;
+    this.cause = cause;
+  }
+};
+function exactObject(value, keys, code) {
+  const parsed = object(value, code);
+  ensure(Object.keys(parsed).length === keys.length && keys.every((key) => Object.hasOwn(parsed, key)), code);
+  return parsed;
+}
 function releaseMetadata(runtime) {
-  return { client_release_id: runtime.verification.client_release_id, movement_release: runtime.verification.movement_release, rules_version: RULES_VERSION, map_sha256: runtime.verification.map_sha256 };
+  return { client_release_id: runtime.verification.client_release_id, movement_release: runtime.verification.movement_release, rules_version: RULES_VERSION2, map_sha256: runtime.verification.map_sha256 };
 }
 function sourceMetadata(state) {
   return { save_key: makeSaveKey(state.profile, state.sessionKey, state.branchId), profile: state.profile, session_key: state.sessionKey, branch_id: state.branchId, revision: state.revision };
 }
 function validateVersions(state) {
   ensure(state.worldDataVersion === WORLD_DATA_VERSION, "DATA_VERSION_MISMATCH");
-  ensure(state.rulesVersion === RULES_VERSION, "RULES_VERSION_MISMATCH");
+  ensure(state.rulesVersion === RULES_VERSION2, "RULES_VERSION_MISMATCH");
 }
 function requireTransferStorage(save) {
   ensure(save?.capability === "atomicCAS", "UNSAFE_STORAGE");
@@ -1971,13 +2337,15 @@ async function readModernEnvelope(input, target, targetKey) {
   object(state, "IMPORT_WORLD_INVALID");
   ensure(state.profile === target.profile, "CROSS_PROFILE_MIGRATION_FORBIDDEN");
   const runtime = await createBrowserMovementRuntime(target);
-  ensure(canonical(release) === canonical(releaseMetadata(runtime)) && release.client_release_id === CLIENT_RELEASE_ID, "IMPORT_RELEASE_MISMATCH");
-  validateState(state, runtime.registry);
-  validateVersions(state);
+  const oldRelease = { ...releaseMetadata(runtime), client_release_id: "m105-client-20261030-v1", rules_version: RULES_VERSION };
+  const isOld = canonical(release) === canonical(oldRelease);
+  ensure(isOld || canonical(release) === canonical(releaseMetadata(runtime)), "IMPORT_RELEASE_MISMATCH");
+  validateState(state, isOld ? runtime.legacyRegistry : runtime.registry);
+  ensure(state.worldDataVersion === WORLD_DATA_VERSION && state.rulesVersion === (isOld ? RULES_VERSION : RULES_VERSION2), "IMPORT_RELEASE_MISMATCH");
   ensure(canonical(source) === canonical(sourceMetadata(state)), "IMPORT_SOURCE_SCOPE_MISMATCH");
   ensure(await sha256Text(canonical(state)) === packet.world_sha256, "IMPORT_WORLD_HASH_MISMATCH");
   ensure(source.save_key !== targetKey, "IMPORT_SOURCE_SCOPE_FORBIDDEN");
-  const next = copy(state);
+  const next = runtime.normalizeSnapshot(state);
   next.lineage = { branchId: state.branchId, revision: state.revision };
   next.sessionKey = target.sessionKey;
   next.branchId = target.branchId;
@@ -2007,26 +2375,46 @@ async function importBrowserSave(serialized, options) {
     integer(target.seed, 1, 4294967295);
     ensure(target.branchId !== "main", "IMPORT_TARGET_BRANCH_REQUIRED");
     ensure(activeSaveKey !== targetKey, "IMPORT_ACTIVE_SCOPE_FORBIDDEN");
-    let input;
-    try {
-      input = JSON.parse(serialized);
-    } catch {
-      throw new DomainError("IMPORT_JSON_INVALID");
-    }
-    rejectDuplicateMembers(serialized);
+    const parsed = parseLegacyInput(serialized), input = parsed.input;
     let state;
     let kind;
     let warnings;
     if (input !== null && typeof input === "object" && !Array.isArray(input) && Object.hasOwn(input, "format")) {
       state = await readModernEnvelope(input, target, targetKey);
-      kind = "m105";
+      kind = input.release?.client_release_id === "m105-client-20261030-v1" ? "m105" : "m1";
       warnings = [];
+    } else if (input.schemaVersion === 1 && Object.hasOwn(input, "moduleState")) {
+      const keys = ["schemaVersion", "worldDataVersion", "rulesVersion", "profile", "sessionKey", "branchId", "revision", "worldTime", "rngState", "moduleState", "scheduler", "journal"];
+      ensure(keys.every((k) => Object.hasOwn(input, k)) && Object.keys(input).every((k) => keys.includes(k) || k === "lineage"), "IMPORT_WORLD_INVALID");
+      ensure(input.rulesVersion === RULES_VERSION && input.worldDataVersion === WORLD_DATA_VERSION, "IMPORT_RELEASE_MISMATCH");
+      ensure(input.profile === target.profile, "CROSS_PROFILE_MIGRATION_FORBIDDEN");
+      const runtime = await createBrowserMovementRuntime(target);
+      validateState(input, runtime.legacyRegistry);
+      ensure(makeSaveKey(input.profile, input.sessionKey, input.branchId) !== targetKey, "IMPORT_SOURCE_SCOPE_FORBIDDEN");
+      state = runtime.normalizeSnapshot(input);
+      state.lineage = { branchId: input.branchId, revision: input.revision };
+      state.sessionKey = target.sessionKey;
+      state.branchId = target.branchId;
+      validateState(state, runtime.registry);
+      kind = "m105";
+      warnings = ["\u5DF2\u5C06\u5347\u7EA7\u524D\u76840.10.0\u539F\u59CB\u5FEB\u7167\u6062\u590D\u5230\u72EC\u7ACB\u65B0\u804A\u5929\uFF1B\u5F53\u524D\u804A\u5929\u4FDD\u6301\u4E0D\u53D8\u3002"];
+    } else if (parsed.kind === "map-only") {
+      ensure(target.profile === "lite", "CROSS_PROFILE_MIGRATION_FORBIDDEN");
+      const runtime = await createBrowserMovementRuntime(target);
+      state = await runtime.gateway.snapshot();
+      state.moduleState["world-map"].data = asJson(migrateLegacyMap(input, runtime.release));
+      validateState(state, runtime.registry);
+      kind = "legacy-map-only";
+      warnings = [`\u65E7\u79BB\u6563\u5730\u70B9\u6309 ${LEGACY_MAP_POLICY_VERSION} \u6620\u5C04\u5230\u5F53\u524D\u53C2\u8003\u70B9\uFF0C\u4E0D\u8FDB\u884C\u5750\u6807\u6362\u7B97\u3002`, "map-only\u53EA\u5305\u542B\u4F4D\u7F6E\uFF1A\u65F6\u95F4\u4ECE0\u5F00\u59CB\uFF0C\u59D3\u540D\u4E3A\u5C0F\u6D1B\u514B\uFF1B\u4E0D\u4F1A\u63A8\u65AD\u5DF2\u6FC0\u6D3B\u6E90\u70B9\u3001\u5267\u60C5\u6216\u5956\u52B1\u3002"];
     } else {
-      const plan = await prepareLegacyMigration(serialized, target);
+      const runtime = await createBrowserMovementRuntime(target), normalized = normalizeLegacyV09(input, runtime.release);
+      const plan = await prepareLegacyMigration(JSON.stringify(normalized.input), target);
       state = copy(plan.state);
-      ensure(plan.backup === serialized && plan.source_sha256 === details.sourceSha256, "MIGRATION_SOURCE_HASH_MISMATCH");
+      state.moduleState["world-map"].data = asJson(normalized.movement);
+      state.moduleState.foundation = { version: 1, data: asJson(createFoundationState("lite", normalized.name, true)) };
+      validateState(state, runtime.registry);
       kind = "legacy-v09";
-      warnings = [...plan.warnings];
+      warnings = normalized.warnings;
     }
     ensure(makeSaveKey(state.profile, state.sessionKey, state.branchId) === targetKey, "SAVE_SCOPE_MISMATCH");
     let result;
@@ -2048,7 +2436,7 @@ async function importBrowserSave(serialized, options) {
       backupId: details.backupId,
       sourceSha256: details.sourceSha256,
       warnings,
-      ...kind === "legacy-v09" ? { migrationPolicyVersion: LEGACY_MIGRATION_POLICY_VERSION } : {}
+      ...["legacy-v09", "legacy-map-only"].includes(kind) ? { migrationPolicyVersion: LEGACY_MAP_POLICY_VERSION } : {}
     };
   } catch (error) {
     if (error instanceof SaveTransferError) throw error;
@@ -2086,28 +2474,65 @@ var messages = {
 function movementErrorMessage(code) {
   return messages[code] ?? `\u52A8\u4F5C\u672A\u6267\u884C\uFF08${code}\uFF09\u3002`;
 }
+
+// src/client-entry.ts
+var foundationMessages = {
+  OPENING_IDENTITY_LOCKED: "\u59D3\u540D\u5DF2\u968F\u6E38\u620F\u884C\u52A8\u56FA\u5B9A\uFF1B\u9700\u8981\u65B0\u7684\u5F00\u573A\u8EAB\u4EFD\u65F6\u8BF7\u65B0\u5EFA\u804A\u5929\u3002",
+  PLAYER_NAME_INVALID: "\u8BF7\u586B\u51991\u81F380\u5B57\u7684\u59D3\u540D\uFF0C\u4E0D\u5305\u542B\u63A7\u5236\u7B26\u6216\u5C16\u62EC\u53F7\u3002",
+  PLAYER_NAME_AUTHORIZATION_REQUIRED: "\u59D3\u540D\u53EA\u80FD\u7531\u73A9\u5BB6\u660E\u786E\u8F93\u5165\u5F00\u573A\u59D3\u540D\u547D\u4EE4\u3002",
+  CLOCK_AUTHORIZATION_REQUIRED: "\u7B49\u5F85\u6216\u5FEB\u8FDB\u9700\u8981\u73A9\u5BB6\u660E\u786E\u6307\u4EE4\uFF1B\u6A21\u578B\u4E0D\u80FD\u81EA\u884C\u6388\u6743\u65F6\u95F4\u53D8\u5316\u3002",
+  CLOCK_INTENT_MISMATCH: "\u65F6\u95F4\u5019\u9009\u4E0E\u73A9\u5BB6\u6307\u5B9A\u7684\u52A8\u4F5C\u6216\u65F6\u957F\u4E0D\u4E00\u81F4\u3002",
+  CLOCK_DURATION_INVALID: "\u65F6\u957F\u987B\u4E3A1\u81F343200\u7684\u6574\u6570\u5206\u949F\u3002",
+  CLOCK_PAYLOAD_INVALID: "\u65F6\u95F4\u52A8\u4F5C\u53C2\u6570\u4E0D\u7B26\u5408\u7EA6\u5B9A\u3002",
+  CLOCK_TIME_OVERFLOW: "\u7D2F\u8BA1\u6E38\u620F\u65F6\u95F4\u8D85\u51FA\u53EF\u5B89\u5168\u8BB0\u5F55\u7684\u8303\u56F4\u3002",
+  ACTION_NOT_RECOGNIZED: "\u672A\u8BC6\u522B\u8FD9\u6761\u547D\u4EE4\uFF0C\u8BF7\u67E5\u770B /rock \u5E2E\u52A9\uFF1B\u4F8B\u5982\u201C\u7B49\u5F8510\u5206\u949F\u201D\u6216\u201C\u5FEB\u8FDB1\u5C0F\u65F6\u201D\u3002"
+};
+function movementErrorMessage2(code) {
+  return foundationMessages[code] ?? movementErrorMessage(code);
+}
 export {
   CLIENT_RELEASE_ID,
+  CLOCK_COMMANDS,
+  CLOCK_POLICY_VERSION,
   ConversationBridge,
+  FOUNDATION_COMMANDS,
+  FOUNDATION_MODULE_ID,
+  FOUNDATION_RULES_VERSION,
   IndexedDbSavePort,
-  RULES_VERSION,
+  RULES_VERSION as MOVEMENT_RULES_VERSION,
+  NAME_COMMAND,
+  PLAYER_ACTIONS,
+  RULES_VERSION2 as RULES_VERSION,
   SaveTransferError,
   WORLD_DATA_VERSION,
   WorldbookBindingError,
+  authorizeClockCandidate,
+  authorizeNameCandidate,
   canonicalWorldbookDigest,
+  clockHandlers,
   conversationScope,
   createBrowserMovementRuntime,
+  createFoundationModule,
+  createFoundationState,
   ensureWorldbookBinding,
   exportBrowserSave,
   extractCandidate,
   importBrowserSave,
+  isSupportedCardRelease,
+  liteStateView,
   loadBrowserRelease,
   loadImportBackup,
   loadReadOnlyNames,
-  movementErrorMessage,
+  loadUpgradeBackup,
+  movementErrorMessage2 as movementErrorMessage,
+  normalizeFoundationSnapshot,
   openConversation,
+  parseClockIntent,
+  parseOpeningName,
+  playerName,
   renameConversationFile,
   sha256Bytes,
   sha256Text,
+  upgradeStoredWorld,
   validateCandidate
 };

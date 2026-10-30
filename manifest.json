@@ -6,7 +6,7 @@
   "dependencies": [],
   "js": "index.js",
   "author": "Rock World project",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "minimum_client_version": "1.19.0",
-  "description": "洛克世界 Lite 的世界书绑定、轻量行动结算与本机存档。"
+  "description": "洛克世界 Lite：人物身份、地图探索、行动时钟、世界书与可靠存档。"
 }
